@@ -40,7 +40,6 @@ async function sendToDiscord(donor, amount, source, message) {
         }],
       }),
     });
-    console.log('💬 Discord: terkirim');
   } catch (err) {
     console.error('❌ Discord error:', err.message);
   }
@@ -48,8 +47,15 @@ async function sendToDiscord(donor, amount, source, message) {
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  if (req.method !== 'POST') return res.status(405).end();
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  if (req.method !== 'POST') {
+    res.status(405).end();
+    return;
+  }
 
   try {
     let body = req.body || {};
@@ -69,7 +75,7 @@ module.exports = async (req, res) => {
     console.log(`💛 Sociabuzz: ${donor} - Rp${amount} [ID: ${d.id}]`);
     await sendToDiscord(donor, amount, 'Sociabuzz', message);
 
-    res.sendStatus(200);
+    res.status(200).json({ ok: true });
   } catch (err) {
     console.error('❌ Error:', err.message);
     res.status(500).json({ error: err.message });
