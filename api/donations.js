@@ -1,17 +1,17 @@
+if (!global._sessions) global._sessions = {};
+if (!global._store)    global._store    = { donations: [], counter: Date.now() };
+
 module.exports = (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session');
-
   if (req.method === 'OPTIONS') return res.sendStatus(200);
 
-  const { getSessions, getDonationsAfter } = require('../lib/store');
-  const sessions = getSessions();
-  const token    = req.headers['x-session'];
-
-  if (!token || !sessions[token]) {
+  const token = req.headers['x-session'];
+  if (!token || !global._sessions[token]) {
     return res.json({ ok: false, reason: 'Invalid or expired session', items: [] });
   }
 
-  const items = getDonationsAfter(req.query.after || '0');
+  const afterNum = Number(req.query.after || '0');
+  const items    = global._store.donations.filter(d => Number(d.id) > afterNum);
   res.json({ ok: true, items });
 };
