@@ -1,4 +1,22 @@
-const { addDonation } = require('../lib/store');
+if (!global._store) global._store = { donations: [], counter: Date.now() };
+
+function addDonation(data) {
+  global._store.counter++;
+  const d = {
+    id:        String(global._store.counter),
+    source:    data.source    || 'unknown',
+    donorName: data.donorName || 'Anonim',
+    amount:    Number(data.amount) || 0,
+    currency:  data.currency  || 'IDR',
+    message:   data.message   || '',
+    createdAt: Date.now(),
+  };
+  global._store.donations.push(d);
+  if (global._store.donations.length > 500) {
+    global._store.donations.splice(0, global._store.donations.length - 500);
+  }
+  return d;
+}
 
 async function sendToDiscord(donor, amount, source, message) {
   const webhook = process.env.DISCORD_WEBHOOK_URL;
@@ -22,6 +40,7 @@ async function sendToDiscord(donor, amount, source, message) {
         }],
       }),
     });
+    console.log('💬 Discord: terkirim');
   } catch (err) {
     console.error('❌ Discord error:', err.message);
   }
@@ -32,20 +51,27 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   if (req.method !== 'POST') return res.status(405).end();
 
-  console.log('📨 Sociabuzz:', JSON.stringify(req.body));
+  try {
+    let body = req.body || {};
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch { body = {}; }
+    }
 
-  let body = req.body || {};
-  if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch { body = {}; }
+    const donor   = body.invoker_name || body.donor || 'Anonim';
+    const amount  = Number(body.amount) || 0;
+    const message = body.message || body.note || '';
+
+    const d = addDonation({
+      source: 'sociabuzz', donorName: donor,
+      amount, currency: 'IDR', message,
+    });
+
+    console.log(`💛 Sociabuzz: ${donor} - Rp${amount} [ID: ${d.id}]`);
+    await sendToDiscord(donor, amount, 'Sociabuzz', message);
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('❌ Error:', err.message);
+    res.status(500).json({ error: err.message });
   }
-
-  const donor   = body.invoker_name || body.donor   || 'Anonim';
-  const amount  = body.amount       || 0;
-  const message = body.message      || body.note    || '';
-
-  const d = addDonation({ source: 'sociabuzz', donorName: donor, amount, currency: 'IDR', message });
-  console.log(`💛 ${donor} - Rp${amount} [ID: ${d.id}]`);
-
-  await sendToDiscord(donor, amount, 'Sociabuzz', message);
-  res.sendStatus(200);
 };
