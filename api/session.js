@@ -1,13 +1,17 @@
 const crypto = require('crypto');
+const { Redis } = require('@upstash/redis');
 
-if (!global._sessions) global._sessions = {};
+const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
-module.exports = (req, res) => {
+module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session');
 
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ ok: false, reason: 'Method not allowed' });
 
   try {
@@ -16,29 +20,18 @@ module.exports = (req, res) => {
       try { body = JSON.parse(body); } catch { body = {}; }
     }
 
-    const universeId = body.universeId;
-    console.log('📥 /api/session universeId:', universeId);
-
-    if (!universeId) {
-      return res.json({ ok: false, reason: 'Missing universeId' });
-    }
+    const universeId = String(body.universeId || '');
+    if (!universeId) return res.json({ ok: false, reason: 'Missing universeId' });
 
     const allowed = (process.env.ALLOWED_UNIVERSES || '').split(',').filter(Boolean);
-    console.log('✅ Allowed:', allowed);
-
-    if (allowed.length > 0 && !allowed.includes(String(universeId))) {
+    if (allowed.length > 0 && !allowed.includes(universeId)) {
       console.warn(`❌ Universe tidak terdaftar: ${universeId}`);
       return res.json({ ok: false, reason: 'Universe ID not registered.' });
     }
 
     const token = crypto.randomBytes(32).toString('hex');
-    global._sessions[token] = { universeId: String(universeId), createdAt: Date.now() };
-
-    // Cleanup session lama lebih dari 24 jam
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    for (const [t, s] of Object.entries(global._sessions)) {
-      if (s.createdAt < cutoff) delete global._sessions[t];
-    }
+    // Simpan session ke Redis dengan TTL 24 jam
+    await redis.set(`session:${token}`, universeId, { ex: 86400 });
 
     console.log(`✅ Session OK untuk Universe: ${universeId}`);
     res.json({ ok: true, token });
