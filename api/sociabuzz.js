@@ -1,9 +1,14 @@
-if (!global._store) global._store = { donations: [], counter: Date.now() };
+const { Redis } = require('@upstash/redis');
 
-function addDonation(data) {
-  global._store.counter++;
-  const d = {
-    id:        String(global._store.counter),
+const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+async function saveDonation(data) {
+  const id = String(Date.now());
+  const d  = {
+    id,
     source:    data.source    || 'unknown',
     donorName: data.donorName || 'Anonim',
     amount:    Number(data.amount) || 0,
@@ -11,10 +16,17 @@ function addDonation(data) {
     message:   data.message   || '',
     createdAt: Date.now(),
   };
-  global._store.donations.push(d);
-  if (global._store.donations.length > 500) {
-    global._store.donations.splice(0, global._store.donations.length - 500);
-  }
+
+  // Ambil list donasi yang ada
+  const raw  = await redis.get('donations') || '[]';
+  const list = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  list.push(d);
+
+  // Simpan max 500
+  if (list.length > 500) list.splice(0, list.length - 500);
+  await redis.set('donations', JSON.stringify(list));
+  await redis.set('last_donation_id', id);
+
   return d;
 }
 
@@ -47,15 +59,8 @@ async function sendToDiscord(donor, amount, source, message) {
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-  if (req.method !== 'POST') {
-    res.status(405).end();
-    return;
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).end();
 
   try {
     let body = req.body || {};
@@ -67,7 +72,7 @@ module.exports = async (req, res) => {
     const amount  = Number(body.amount) || 0;
     const message = body.message || body.note || '';
 
-    const d = addDonation({
+    const d = await saveDonation({
       source: 'sociabuzz', donorName: donor,
       amount, currency: 'IDR', message,
     });
