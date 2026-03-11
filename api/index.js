@@ -5,13 +5,22 @@ const crypto = require('crypto');
 const app = express();
 app.use(express.json());
 
+// CORS — izinkan semua origin termasuk Roblox
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 // ============================================================
-// CONFIG — semua dari Environment Variables Vercel
+// CONFIG
 // ============================================================
 const CONFIG = {
   ALLOWED_UNIVERSES: (process.env.ALLOWED_UNIVERSES || '').split(',').filter(Boolean),
-  SPREADSHEET_ID:    process.env.SPREADSHEET_ID,
-  DISCORD_WEBHOOK:   process.env.DISCORD_WEBHOOK_URL,
+  SPREADSHEET_ID:    process.env.SPREADSHEET_ID    || '',
+  DISCORD_WEBHOOK:   process.env.DISCORD_WEBHOOK_URL || '',
 };
 
 // ============================================================
@@ -46,10 +55,23 @@ function getDonationsAfter(afterId) {
 // GOOGLE SHEETS
 // ============================================================
 let sheets = null;
-if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.SPREADSHEET_ID) {
+
+function initSheets() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw || raw === 'undefined' || raw === '' || !CONFIG.SPREADSHEET_ID) {
+    console.log('ℹ️ Google Sheets dilewati');
+    return;
+  }
+  let credentials = null;
+  try {
+    credentials = JSON.parse(raw);
+  } catch (err) {
+    console.error('❌ JSON tidak valid:', err.message);
+    return;
+  }
   try {
     const auth = new google.auth.GoogleAuth({
-      credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+      credentials,
       scopes: [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
@@ -58,14 +80,15 @@ if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.SPREADSHEET_ID) {
     sheets = google.sheets({ version: 'v4', auth });
     console.log('✅ Google Sheets terhubung');
   } catch (err) {
-    console.error('❌ Sheets error:', err.message);
+    console.error('❌ Auth error:', err.message);
   }
 }
 
+initSheets();
+
 async function saveToSheets(donor, amount, source, message) {
-  if (!sheets) return;
+  if (!sheets || !CONFIG.SPREADSHEET_ID) return;
   try {
-    // Simpan ke sheet Riwayat
     await sheets.spreadsheets.values.append({
       spreadsheetId: CONFIG.SPREADSHEET_ID,
       range: 'Riwayat!A:E',
@@ -73,16 +96,12 @@ async function saveToSheets(donor, amount, source, message) {
       requestBody: {
         values: [[
           new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }),
-          donor,
-          amount,
-          source,
-          message || '-'
+          donor, amount, source, message || '-'
         ]]
       }
     });
 
-    // Ambil data leaderboard
-    const res  = await sheets.spreadsheets.values.get({
+    const res   = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SPREADSHEET_ID,
       range: 'Leaderboard!A:B'
     });
@@ -91,10 +110,7 @@ async function saveToSheets(donor, amount, source, message) {
 
     const updated = rows.map((row, i) => {
       if (i === 0) return row;
-      if (row[0] === donor) {
-        found = true;
-        return [donor, (parseInt(row[1]) || 0) + parseInt(amount)];
-      }
+      if (row[0] === donor) { found = true; return [donor, (parseInt(row[1]) || 0) + parseInt(amount)]; }
       return row;
     });
     if (!found) updated.push([donor, parseInt(amount)]);
@@ -102,15 +118,13 @@ async function saveToSheets(donor, amount, source, message) {
     const header = updated[0];
     const sorted = updated.slice(1).sort((a, b) => (b[1] || 0) - (a[1] || 0));
 
-    // Tulis ulang leaderboard
     await sheets.spreadsheets.values.update({
       spreadsheetId: CONFIG.SPREADSHEET_ID,
       range: 'Leaderboard!A:B',
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [header, ...sorted] }
     });
-
-    console.log('✅ Sheets: tersimpan');
+    console.log('✅ Sheets tersimpan');
   } catch (err) {
     console.error('❌ Sheets error:', err.message);
   }
@@ -118,7 +132,6 @@ async function saveToSheets(donor, amount, source, message) {
 
 // ============================================================
 // DISCORD WEBHOOK
-// Tidak pakai discord.js — cukup fetch ke Webhook URL
 // ============================================================
 async function sendToDiscord(donor, amount, source, message) {
   if (!CONFIG.DISCORD_WEBHOOK) return;
@@ -141,69 +154,55 @@ async function sendToDiscord(donor, amount, source, message) {
         }]
       })
     });
-    console.log('💬 Discord webhook: terkirim');
+    console.log('💬 Discord: terkirim');
   } catch (err) {
     console.error('❌ Discord error:', err.message);
   }
 }
 
 // ============================================================
-// ROUTES — dipakai Roblox script
+// ROUTES
 // ============================================================
-
-// Health check
 app.get('/', (req, res) => {
   res.json({
     status:         '🟢 online',
     platform:       'Vercel Serverless',
     totalDonations: donations.length,
-    sheets:         sheets    ? 'connected' : 'disabled',
+    sheets:         sheets ? 'connected' : 'disabled',
     discord:        CONFIG.DISCORD_WEBHOOK ? 'ready' : 'disabled',
   });
 });
 
-// POST /api/session — Roblox minta session token saat server start
 app.post('/api/session', (req, res) => {
   const { universeId } = req.body || {};
+  if (!universeId) return res.json({ ok: false, reason: 'Missing universeId' });
 
-  if (!universeId) {
-    return res.json({ ok: false, reason: 'Missing universeId' });
-  }
-
-  // Cek license
   if (CONFIG.ALLOWED_UNIVERSES.length > 0 && !CONFIG.ALLOWED_UNIVERSES.includes(String(universeId))) {
     console.warn(`❌ Universe tidak terdaftar: ${universeId}`);
-    return res.json({ ok: false, reason: 'Universe ID not registered. Please contact the developer.' });
+    return res.json({ ok: false, reason: 'Universe ID not registered.' });
   }
 
-  // Buat session token
   const token = crypto.randomBytes(32).toString('hex');
   sessions[token] = { universeId: String(universeId), createdAt: Date.now() };
 
-  // Cleanup session lama lebih dari 24 jam
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   for (const [t, s] of Object.entries(sessions)) {
     if (s.createdAt < cutoff) delete sessions[t];
   }
 
-  console.log(`✅ Session dibuat untuk Universe: ${universeId}`);
+  console.log(`✅ Session untuk Universe: ${universeId}`);
   res.json({ ok: true, token });
 });
 
-// GET /api/tail — ambil ID donasi terakhir
 app.get('/api/tail', (req, res) => {
   const token = req.headers['x-session'];
   if (!token || !sessions[token]) {
     return res.json({ ok: false, reason: 'Invalid or expired session' });
   }
   const latest = donations[donations.length - 1];
-  res.json({
-    ok: true,
-    id: latest ? latest.id : String(Date.now())
-  });
+  res.json({ ok: true, id: latest ? latest.id : String(Date.now()) });
 });
 
-// GET /api/donations?after=ID — Roblox polling donasi baru
 app.get('/api/donations', (req, res) => {
   const token = req.headers['x-session'];
   if (!token || !sessions[token]) {
@@ -214,79 +213,39 @@ app.get('/api/donations', (req, res) => {
 });
 
 // ============================================================
-// WEBHOOK ENDPOINTS — dari platform donasi
+// WEBHOOKS
 // ============================================================
-
-// Sociabuzz
 app.post('/webhook/sociabuzz', async (req, res) => {
   console.log('📨 Sociabuzz:', JSON.stringify(req.body));
-
   const donor   = req.body.invoker_name || req.body.donor   || 'Anonim';
   const amount  = req.body.amount       || 0;
   const message = req.body.message      || req.body.note    || '';
-
-  const d = addDonation({
-    source: 'sociabuzz', donorName: donor,
-    amount, currency: 'IDR', message
-  });
-
-  console.log(`💛 Sociabuzz: ${donor} - Rp${amount} [ID: ${d.id}]`);
-
-  await Promise.all([
-    saveToSheets(donor, amount, 'sociabuzz', message),
-    sendToDiscord(donor, amount, 'Sociabuzz', message)
-  ]);
-
+  const d = addDonation({ source: 'sociabuzz', donorName: donor, amount, currency: 'IDR', message });
+  console.log(`💛 ${donor} - Rp${amount} [ID: ${d.id}]`);
+  await Promise.all([saveToSheets(donor, amount, 'sociabuzz', message), sendToDiscord(donor, amount, 'Sociabuzz', message)]);
   res.sendStatus(200);
 });
 
-// Saweria
 app.post('/webhook/saweria', async (req, res) => {
   console.log('📨 Saweria:', JSON.stringify(req.body));
-
   const donor   = req.body.donatur_name || req.body.donor   || 'Anonim';
   const amount  = req.body.amount_raw   || req.body.amount  || 0;
   const message = req.body.donatur_say  || req.body.message || '';
-
-  const d = addDonation({
-    source: 'saweria', donorName: donor,
-    amount, currency: 'IDR', message
-  });
-
-  console.log(`💛 Saweria: ${donor} - Rp${amount} [ID: ${d.id}]`);
-
-  await Promise.all([
-    saveToSheets(donor, amount, 'saweria', message),
-    sendToDiscord(donor, amount, 'Saweria', message)
-  ]);
-
+  const d = addDonation({ source: 'saweria', donorName: donor, amount, currency: 'IDR', message });
+  console.log(`💛 ${donor} - Rp${amount} [ID: ${d.id}]`);
+  await Promise.all([saveToSheets(donor, amount, 'saweria', message), sendToDiscord(donor, amount, 'Saweria', message)]);
   res.sendStatus(200);
 });
 
-// Tako
 app.post('/webhook/tako', async (req, res) => {
   console.log('📨 Tako:', JSON.stringify(req.body));
-
   const donor   = req.body.supporter_name || req.body.donor   || 'Anonim';
   const amount  = req.body.amount         || 0;
   const message = req.body.message        || '';
-
-  const d = addDonation({
-    source: 'tako', donorName: donor,
-    amount, currency: 'IDR', message
-  });
-
-  console.log(`💛 Tako: ${donor} - Rp${amount} [ID: ${d.id}]`);
-
-  await Promise.all([
-    saveToSheets(donor, amount, 'tako', message),
-    sendToDiscord(donor, amount, 'Tako', message)
-  ]);
-
+  const d = addDonation({ source: 'tako', donorName: donor, amount, currency: 'IDR', message });
+  console.log(`💛 ${donor} - Rp${amount} [ID: ${d.id}]`);
+  await Promise.all([saveToSheets(donor, amount, 'tako', message), sendToDiscord(donor, amount, 'Tako', message)]);
   res.sendStatus(200);
 });
 
-// ============================================================
-// EXPORT — wajib untuk Vercel serverless
-// ============================================================
 module.exports = app;
