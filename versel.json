@@ -1,15 +1,10 @@
 {
   "version": 2,
-  "functions": {
-    "api/index.js": {
-      "memory": 512,
-      "maxDuration": 30
-    }
-  },
   "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index"
-    }
+    { "source": "/api/session",   "destination": "/api/index" },
+    { "source": "/api/tail",      "destination": "/api/index" },
+    { "source": "/api/donations", "destination": "/api/index" },
+    { "source": "/webhook/(.*)",  "destination": "/api/index" },
+    { "source": "/",              "destination": "/api/index" }
   ]
 }
