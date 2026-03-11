@@ -1,17 +1,28 @@
-if (!global._sessions) global._sessions = {};
-if (!global._store)    global._store    = { donations: [], counter: Date.now() };
+const { Redis } = require('@upstash/redis');
 
-module.exports = (req, res) => {
+const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const token = req.headers['x-session'];
-  if (!token || !global._sessions[token]) {
-    return res.json({ ok: false, reason: 'Invalid or expired session' });
+  try {
+    const token      = req.headers['x-session'];
+    const universeId = token ? await redis.get(`session:${token}`) : null;
+
+    if (!universeId) {
+      return res.json({ ok: false, reason: 'Invalid or expired session' });
+    }
+
+    // Ambil ID donasi terakhir
+    const lastId = await redis.get('last_donation_id');
+    res.json({ ok: true, id: lastId || String(Date.now()) });
+  } catch (err) {
+    console.error('❌ Tail error:', err.message);
+    res.status(500).json({ ok: false, reason: err.message });
   }
-
-  const donations = global._store.donations;
-  const latest    = donations[donations.length - 1];
-  res.json({ ok: true, id: latest ? latest.id : String(Date.now()) });
 };
