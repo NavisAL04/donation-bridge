@@ -1,5 +1,4 @@
 const express = require('express');
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { google } = require('googleapis');
 
 const app = express();
