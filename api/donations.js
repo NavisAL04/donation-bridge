@@ -1,17 +1,33 @@
-if (!global._sessions) global._sessions = {};
-if (!global._store)    global._store    = { donations: [], counter: Date.now() };
+const { Redis } = require('@upstash/redis');
 
-module.exports = (req, res) => {
+const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const token = req.headers['x-session'];
-  if (!token || !global._sessions[token]) {
-    return res.json({ ok: false, reason: 'Invalid or expired session', items: [] });
+  try {
+    const token      = req.headers['x-session'];
+    const universeId = token ? await redis.get(`session:${token}`) : null;
+
+    if (!universeId) {
+      return res.json({ ok: false, reason: 'Invalid or expired session', items: [] });
+    }
+
+    const afterNum = Number(req.query.after || '0');
+
+    // Ambil semua donasi dari Redis list
+    const raw  = await redis.get('donations') || '[]';
+    const all  = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const items = all.filter(d => Number(d.id) > afterNum);
+
+    res.json({ ok: true, items });
+  } catch (err) {
+    console.error('❌ Donations error:', err.message);
+    res.status(500).json({ ok: false, reason: err.message, items: [] });
   }
-
-  const afterNum = Number(req.query.after || '0');
-  const items    = global._store.donations.filter(d => Number(d.id) > afterNum);
-  res.json({ ok: true, items });
 };
